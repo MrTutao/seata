@@ -21,65 +21,54 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
 
+import io.seata.common.exception.ShouldNeverHappenException;
+import io.seata.common.holder.ObjectHolder;
 import io.seata.config.Configuration;
 import io.seata.config.ExtConfigurationProvider;
-import io.seata.spring.boot.autoconfigure.StarterConstants;
-import io.seata.spring.boot.autoconfigure.util.SpringUtils;
-import io.seata.spring.boot.autoconfigure.util.StringFormatUtils;
 import org.apache.commons.lang.StringUtils;
+import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.cglib.proxy.Enhancer;
 import org.springframework.cglib.proxy.MethodInterceptor;
 import org.springframework.cglib.proxy.MethodProxy;
+import org.springframework.context.ApplicationContext;
 
-import static io.seata.spring.boot.autoconfigure.StarterConstants.NORMALIZED_KEY_CLIENT;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.NORMALIZED_KEY_CLIENT_LOCK;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.NORMALIZED_KEY_CONFIG_APOLLO;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.NORMALIZED_KEY_CONFIG_ZK;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.NORMALIZED_KEY_DATASOURCE_AUTOPROXY;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.NORMALIZED_KEY_GROUPLIST;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.NORMALIZED_KEY_REGISTRY_ZK;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.NORMALIZED_KEY_UNDO;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.NORMALIZED_KEY_TRANSPORT_THREAD_FACTORY;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.NORMALIZED_KEY_VGROUP_MAPPING;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.PROPERTY_MAP;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.SPECIAL_KEY_CLIENT;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.SPECIAL_KEY_CLIENT_LOCK;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.SPECIAL_KEY_CONFIG_APOLLO;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.SPECIAL_KEY_CONFIG_ZK;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.SPECIAL_KEY_DATASOURCE_AUTOPROXY;
+import static io.seata.common.Constants.OBJECT_KEY_SPRING_APPLICATION_CONTEXT;
+import static io.seata.common.util.StringFormatUtils.DOT;
+import static io.seata.spring.boot.autoconfigure.StarterConstants.PROPERTY_BEAN_MAP;
+import static io.seata.spring.boot.autoconfigure.StarterConstants.SEATA_PREFIX;
+import static io.seata.spring.boot.autoconfigure.StarterConstants.SERVICE_PREFIX;
 import static io.seata.spring.boot.autoconfigure.StarterConstants.SPECIAL_KEY_GROUPLIST;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.SPECIAL_KEY_REGISTRY_ZK;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.SPECIAL_KEY_UNDO;
-import static io.seata.spring.boot.autoconfigure.StarterConstants.SPECIAL_KEY_TRANSPORT_THREAD_FACTORY;
 import static io.seata.spring.boot.autoconfigure.StarterConstants.SPECIAL_KEY_VGROUP_MAPPING;
 
 /**
  * @author xingfudeshi@gmail.com
- * @date 2019/10/03
  */
 public class SpringBootConfigurationProvider implements ExtConfigurationProvider {
     private static final String INTERCEPT_METHOD_PREFIX = "get";
 
     @Override
     public Configuration provide(Configuration originalConfiguration) {
-        return (Configuration)Enhancer.create(originalConfiguration.getClass(), new MethodInterceptor() {
+        return (Configuration) Enhancer.create(originalConfiguration.getClass(), new MethodInterceptor() {
             @Override
             public Object intercept(Object proxy, Method method, Object[] args, MethodProxy methodProxy)
                 throws Throwable {
                 if (method.getName().startsWith(INTERCEPT_METHOD_PREFIX) && args.length > 0) {
                     Object result = null;
-                    String rawDataId = (String)args[0];
+                    String rawDataId = (String) args[0];
                     if (args.length == 1) {
                         result = get(convertDataId(rawDataId));
                     } else if (args.length == 2) {
                         result = get(convertDataId(rawDataId), args[1]);
                     } else if (args.length == 3) {
-                        result = get(convertDataId(rawDataId), args[1], (Long)args[2]);
+                        result = get(convertDataId(rawDataId), args[1], (Long) args[2]);
                     }
-                    if (null != result) {
+                    if (result != null) {
+                        //If the return type is String,need to convert the object to string
+                        if (method.getReturnType().equals(String.class)) {
+                            return String.valueOf(result);
+                        }
                         return result;
                     }
-
                 }
 
                 return method.invoke(originalConfiguration, args);
@@ -87,33 +76,65 @@ public class SpringBootConfigurationProvider implements ExtConfigurationProvider
         });
     }
 
-    private Object get(String dataId, Object defaultValue, long timeoutMills) throws IllegalAccessException {
+    private Object get(String dataId, Object defaultValue, long timeoutMills) throws IllegalAccessException, InstantiationException {
         return get(dataId, defaultValue);
 
     }
 
-    private Object get(String dataId, Object defaultValue) throws IllegalAccessException {
+    private Object get(String dataId, Object defaultValue) throws IllegalAccessException, InstantiationException {
         Object result = get(dataId);
-        if (null == result) {
+        if (result == null) {
             return defaultValue;
         }
         return result;
     }
 
-    private Object get(String dataId) throws IllegalAccessException {
+    private Object get(String dataId) throws IllegalAccessException, InstantiationException {
+        String propertyPrefix = getPropertyPrefix(dataId);
         String propertySuffix = getPropertySuffix(dataId);
-        Class propertyClass = getPropertyClass(getPropertyPrefix(dataId));
-        if (null != propertyClass) {
-            Object propertyObject = SpringUtils.getBean(propertyClass);
-            Optional<Field> fieldOptional = Stream.of(propertyObject.getClass().getDeclaredFields()).filter(
-                f -> f.getName().equalsIgnoreCase(propertySuffix)).findAny();
-            if (fieldOptional.isPresent()) {
-                Field field = fieldOptional.get();
-                field.setAccessible(true);
-                return field.get(propertyObject);
+        ApplicationContext applicationContext = (ApplicationContext) ObjectHolder.INSTANCE.getObject(OBJECT_KEY_SPRING_APPLICATION_CONTEXT);
+        Class<?> propertyClass = PROPERTY_BEAN_MAP.get(propertyPrefix);
+        Object valueObject = null;
+        if (propertyClass != null) {
+            try {
+                Object propertyBean = applicationContext.getBean(propertyClass);
+                valueObject = getFieldValue(propertyBean, propertySuffix, dataId);
+            } catch (NoSuchBeanDefinitionException ignore) {
+
+            }
+        } else {
+            throw new ShouldNeverHappenException("PropertyClass for prefix: [" + propertyPrefix + "] should not be null.");
+        }
+        if (valueObject == null) {
+            valueObject = getFieldValue(propertyClass.newInstance(), propertySuffix, dataId);
+        }
+
+        return valueObject;
+    }
+
+    /**
+     * get field value
+     *
+     * @param object
+     * @param fieldName
+     * @param dataId
+     * @return java.lang.Object
+     * @author xingfudeshi@gmail.com
+     */
+    private Object getFieldValue(Object object, String fieldName, String dataId) throws IllegalAccessException {
+        Object value = null;
+        Optional<Field> fieldOptional = Stream.of(object.getClass().getDeclaredFields()).filter(
+            f -> f.getName().equalsIgnoreCase(fieldName)).findAny();
+        if (fieldOptional.isPresent()) {
+            Field field = fieldOptional.get();
+            field.setAccessible(true);
+            value = field.get(object);
+            if (value instanceof Map) {
+                String key = StringUtils.substringAfterLast(dataId, String.valueOf(DOT));
+                value = ((Map) value).get(key);
             }
         }
-        return null;
+        return value;
     }
 
     /**
@@ -123,46 +144,12 @@ public class SpringBootConfigurationProvider implements ExtConfigurationProvider
      * @return dataId
      */
     private String convertDataId(String rawDataId) {
-        if (rawDataId.startsWith(SPECIAL_KEY_VGROUP_MAPPING)) {
-            return StarterConstants.SERVICE_PREFIX + "." + NORMALIZED_KEY_VGROUP_MAPPING;
-        }
         if (rawDataId.endsWith(SPECIAL_KEY_GROUPLIST)) {
-            return StarterConstants.SERVICE_PREFIX + "." + NORMALIZED_KEY_GROUPLIST;
+            String suffix = StringUtils.removeEnd(rawDataId, DOT + SPECIAL_KEY_GROUPLIST);
+            //change the format of default.grouplist to grouplist.default
+            return SERVICE_PREFIX + DOT + SPECIAL_KEY_GROUPLIST + DOT + suffix;
         }
-        if (rawDataId.endsWith(SPECIAL_KEY_DATASOURCE_AUTOPROXY)) {
-            return StarterConstants.SPRING_PREFIX + "." + NORMALIZED_KEY_DATASOURCE_AUTOPROXY;
-        }
-        if (rawDataId.startsWith(SPECIAL_KEY_UNDO)) {
-            String suffix = StringUtils.removeStart(rawDataId, NORMALIZED_KEY_UNDO);
-            return StarterConstants.UNDO_PREFIX + "." + StringFormatUtils.dotToCamel(suffix);
-        }
-        if (rawDataId.startsWith(SPECIAL_KEY_CLIENT_LOCK)) {
-            String suffix = StringUtils.removeStart(rawDataId, NORMALIZED_KEY_CLIENT_LOCK);
-            return StarterConstants.LOCK_PREFIX + "." + StringFormatUtils.minusToCamel(
-                StringFormatUtils.dotToCamel(suffix));
-        }
-        if (rawDataId.startsWith(SPECIAL_KEY_CLIENT)) {
-            String suffix = StringUtils.removeStart(rawDataId, NORMALIZED_KEY_CLIENT);
-            return StarterConstants.CLIENT_PREFIX + "." + StringFormatUtils.dotToCamel(suffix);
-        }
-        if (rawDataId.startsWith(SPECIAL_KEY_TRANSPORT_THREAD_FACTORY)) {
-            String suffix = StringUtils.removeStart(rawDataId, NORMALIZED_KEY_TRANSPORT_THREAD_FACTORY);
-            return StarterConstants.THREAD_FACTORY_PREFIX + "." + StringFormatUtils.minusToCamel(suffix);
-        }
-        if (rawDataId.startsWith(SPECIAL_KEY_REGISTRY_ZK)) {
-            String suffix = StringUtils.removeStart(rawDataId, NORMALIZED_KEY_REGISTRY_ZK);
-            return StarterConstants.REGISTRY_ZK_PREFIX + "." + StringFormatUtils.dotToCamel(suffix);
-        }
-        if (rawDataId.startsWith(SPECIAL_KEY_CONFIG_ZK)) {
-            String suffix = StringUtils.removeStart(rawDataId, NORMALIZED_KEY_CONFIG_ZK);
-            return StarterConstants.CONFIG_ZK_PREFIX + "." + StringFormatUtils.dotToCamel(suffix);
-        }
-        if (rawDataId.startsWith(SPECIAL_KEY_CONFIG_APOLLO)) {
-            String suffix = StringUtils.removeStart(rawDataId, NORMALIZED_KEY_CONFIG_APOLLO);
-            return StarterConstants.CONFIG_APOLLO_PREFIX + "." + StringFormatUtils.dotToCamel(suffix);
-        }
-
-        return StarterConstants.SEATA_PREFIX + "." + rawDataId;
+        return SEATA_PREFIX + DOT + rawDataId;
     }
 
     /**
@@ -172,8 +159,13 @@ public class SpringBootConfigurationProvider implements ExtConfigurationProvider
      * @return propertyPrefix
      */
     private String getPropertyPrefix(String dataId) {
-        return StringFormatUtils.underlineToCamel(
-            StringFormatUtils.minusToCamel(StringUtils.substringBeforeLast(dataId, ".")));
+        if (dataId.contains(SPECIAL_KEY_VGROUP_MAPPING)) {
+            return SERVICE_PREFIX;
+        }
+        if (dataId.contains(SPECIAL_KEY_GROUPLIST)) {
+            return SERVICE_PREFIX;
+        }
+        return StringUtils.substringBeforeLast(dataId, String.valueOf(DOT));
     }
 
     /**
@@ -183,18 +175,12 @@ public class SpringBootConfigurationProvider implements ExtConfigurationProvider
      * @return propertySuffix
      */
     private String getPropertySuffix(String dataId) {
-        return StringUtils.substringAfterLast(dataId, ".");
-    }
-
-    /**
-     * Get property class
-     *
-     * @param propertyPrefix
-     * @return propertyClass
-     */
-    private Class getPropertyClass(String propertyPrefix) {
-        Optional<Map.Entry<String, Class>> entry = PROPERTY_MAP.entrySet().stream().filter(
-            e -> propertyPrefix.equals(e.getKey())).findAny();
-        return entry.map(Map.Entry::getValue).orElse(null);
+        if (dataId.contains(SPECIAL_KEY_VGROUP_MAPPING)) {
+            return SPECIAL_KEY_VGROUP_MAPPING;
+        }
+        if (dataId.contains(SPECIAL_KEY_GROUPLIST)) {
+            return SPECIAL_KEY_GROUPLIST;
+        }
+        return StringUtils.substringAfterLast(dataId, String.valueOf(DOT));
     }
 }

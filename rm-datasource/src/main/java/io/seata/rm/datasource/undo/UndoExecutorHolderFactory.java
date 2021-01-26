@@ -15,12 +15,11 @@
  */
 package io.seata.rm.datasource.undo;
 
-import io.seata.common.loader.EnhancedServiceLoader;
-
-import java.text.MessageFormat;
-import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+import io.seata.common.loader.EnhancedServiceLoader;
+import io.seata.common.util.CollectionUtils;
 
 /**
  * The Type UndoExecutorHolderFactory
@@ -28,7 +27,8 @@ import java.util.Map;
  * @author: Zhibei Hao
  */
 public class UndoExecutorHolderFactory {
-    private static volatile Map<String, UndoExecutorHolder> executorHolderMap;
+
+    private static final Map<String, UndoExecutorHolder> UNDO_EXECUTOR_HOLDER_MAP = new ConcurrentHashMap<>();
 
     /**
      * Get UndoExecutorHolder by db type
@@ -37,22 +37,7 @@ public class UndoExecutorHolderFactory {
      * @return the UndoExecutorGroup
      */
     public static UndoExecutorHolder getUndoExecutorHolder(String dbType) {
-
-        if (executorHolderMap == null) {
-            synchronized (UndoExecutorHolderFactory.class) {
-                if (executorHolderMap == null) {
-                    Map<String, UndoExecutorHolder> initializedMap = new HashMap<>();
-                    List<UndoExecutorHolder> holderList = EnhancedServiceLoader.loadAll(UndoExecutorHolder.class);
-                    for (UndoExecutorHolder holder : holderList) {
-                        initializedMap.put(holder.getDbType().toLowerCase(), holder);
-                    }
-                    executorHolderMap = initializedMap;
-                }
-            }
-        }
-        if (executorHolderMap.containsKey(dbType)) {
-            return executorHolderMap.get(dbType);
-        }
-        throw new UnsupportedOperationException(MessageFormat.format("now not support {0}", dbType));
+        return CollectionUtils.computeIfAbsent(UNDO_EXECUTOR_HOLDER_MAP, dbType,
+            key -> EnhancedServiceLoader.load(UndoExecutorHolder.class, dbType));
     }
 }

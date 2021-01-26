@@ -126,14 +126,14 @@ public interface StateMachine {
      *
      * @return
      */
-    String getRecoverStrategy();
+    RecoverStrategy getRecoverStrategy();
 
     /**
      * set RecoverStrategy
      *
      * @param recoverStrategy
      */
-    void setRecoverStrategy(String recoverStrategy);
+    void setRecoverStrategy(RecoverStrategy recoverStrategy);
 
     /**
      * Is it persist execution log to storage?, default true
@@ -141,6 +141,20 @@ public interface StateMachine {
      * @return
      */
     boolean isPersist();
+
+    /**
+     * Is update last retry execution log, default append new
+     *
+     * @return
+     */
+    Boolean isRetryPersistModeUpdate();
+
+    /**
+     * Is update last compensate execution log, default append new
+     *
+     * @return
+     */
+    Boolean isCompensatePersistModeUpdate();
 
     /**
      * State language text
